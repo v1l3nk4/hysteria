@@ -24,6 +24,12 @@ const (
 	closeErrCodeTrafficLimitReached = 0x107 // HTTP3 ErrCodeExcessiveLoad
 )
 
+// errUDPSessionLimited (b10d) is returned by udpIOImpl.UDP when the
+// StreamLimiter rejects a NEW UDP session; the dialFunc surfaces it so
+// the session is never created and the datagram is dropped, without
+// tearing down the connection.
+var errUDPSessionLimited = errors.New("udp session rate limited")
+
 type Server interface {
 	Serve() error
 	Close() error
@@ -219,7 +225,7 @@ func (h *h3sHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if !h.config.DisableUDP {
 				go func() {
 					sm := newUDPSessionManager(
-						&udpIOImpl{h.conn, id, h.config.TrafficLogger, h.config.RequestHook, h.config.Outbound},
+						&udpIOImpl{h.conn, id, h.config.TrafficLogger, h.config.RequestHook, h.config.Outbound, h.config.StreamLimiter},
 						&udpEventLoggerImpl{h.conn, id, h.config.EventLogger},
 						h.config.UDPIdleTimeout,
 					)
@@ -305,6 +311,16 @@ func (h *h3sHandler) handleTCPRequest(stream *utils.QStream) {
 	if h.config.EventLogger != nil {
 		h.config.EventLogger.TCPRequest(h.conn.RemoteAddr(), h.authID, reqAddr)
 	}
+	// Per-peer new-stream rate limit (b10d): reject THIS stream only,
+	// leaving the connection alive. Mirrors the wg_ext nft ct-state-new
+	// cap for the Hysteria path (the nft cap can't see hsd's egress).
+	if sl := h.config.StreamLimiter; sl != nil && !sl.AllowTCP(h.authID, reqAddr) {
+		if !hooked {
+			_ = protocol.WriteTCPResponse(stream, false, "rate limited")
+		}
+		_ = stream.Close()
+		return
+	}
 	// Dial target
 	streamStats.State.Store(StreamStateConnecting)
 	tConn, err := h.config.Outbound.TCP(reqAddr)
@@ -363,6 +379,7 @@ type udpIOImpl struct {
 	TrafficLogger TrafficLogger
 	RequestHook   RequestHook
 	Outbound      Outbound
+	StreamLimiter StreamLimiter // b10d: per-peer new-UDP-session rate gate
 }
 
 func (io *udpIOImpl) ReceiveMessage() (*protocol.UDPMessage, error) {
@@ -415,6 +432,12 @@ func (io *udpIOImpl) Hook(packets [][]byte, reqAddr *string) (bool, error) {
 }
 
 func (io *udpIOImpl) UDP(reqAddr string) (UDPConn, error) {
+	// Per-peer new-session rate limit (b10d): reject this NEW UDP session
+	// only — dialFunc returns the error, so the session is never created
+	// and the datagram is dropped, leaving the connection alive.
+	if io.StreamLimiter != nil && !io.StreamLimiter.AllowUDP(io.AuthID, reqAddr) {
+		return nil, errUDPSessionLimited
+	}
 	return io.Outbound.UDP(reqAddr)
 }
 

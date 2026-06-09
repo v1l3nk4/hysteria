@@ -41,6 +41,13 @@ type Config struct {
 	EventLogger           EventLogger
 	TrafficLogger         TrafficLogger
 	MasqHandler           http.Handler
+	// StreamLimiter (b10d) is consulted before the server opens a NEW
+	// outbound proxy stream (TCP) or UDP session. Returning false rejects
+	// just that single stream/session, leaving the rest of the connection
+	// intact — used for per-peer new-connection rate limiting (the analog
+	// of the agent's wg_ext nft `ct state new` cap, which can't see hsd's
+	// locally-generated egress). nil disables the check.
+	StreamLimiter StreamLimiter
 }
 
 // fill fills the fields that are not set by the user with default values when possible,
@@ -262,6 +269,16 @@ type TrafficLogger interface {
 	LogOnlineState(id string, online bool)
 	TraceStream(stream HyStream, stats *StreamStats)
 	UntraceStream(stream HyStream)
+}
+
+// StreamLimiter (b10d) gates the creation of new proxy streams / UDP
+// sessions per authenticated peer. AllowTCP/AllowUDP receive the
+// authenticated peer id and the requested target address and return
+// false to reject just that one stream/session (the connection stays
+// up). The implementation must be thread-safe.
+type StreamLimiter interface {
+	AllowTCP(id, reqAddr string) bool
+	AllowUDP(id, reqAddr string) bool
 }
 
 type StreamState int
