@@ -18,6 +18,14 @@ const (
 	maxSessionACLCache  = 256
 )
 
+// ErrRequestHookMore (b10d) lets a UDP RequestHook inspect a session's later
+// datagrams without holding them back. Returned from RequestHook.UDP, the held
+// packets are sent at once, and each later datagram is passed to the hook on its
+// own as it goes out until the hook returns nil and done (stop inspecting) or
+// another error (abort the session); ErrRequestHookMore again, or not done,
+// asks for the next one.
+var ErrRequestHookMore = errors.New("request hook: inspect more datagrams")
+
 type udpIO interface {
 	ReceiveMessage() (*protocol.UDPMessage, error)
 	SendMessage([]byte, *protocol.UDPMessage) error
@@ -46,6 +54,10 @@ type udpSessionEntry struct {
 	conn     UDPConn
 	connLock sync.Mutex
 	closed   bool
+
+	// hookInspect (b10d): the RequestHook asked to inspect further datagrams of
+	// this session (it returned ErrRequestHookMore on a prior datagram).
+	hookInspect bool
 
 	aclCache map[string]error
 }
@@ -102,6 +114,23 @@ func (e *udpSessionEntry) Feed(msg *protocol.UDPMessage) (int, error) {
 		return 0, nil
 	}
 	if e.conn != nil {
+		if e.hookInspect {
+			// b10d: the hook asked for more (ErrRequestHookMore). Each later
+			// datagram is passed to it on its own as it goes out, with a
+			// throwaway copy of the address: this inspection cannot rewrite
+			// the target.
+			hookAddr := dfMsg.Addr
+			done, err := e.IO.Hook([][]byte{dfMsg.Data}, &hookAddr)
+			switch {
+			case errors.Is(err, ErrRequestHookMore), err == nil && !done:
+				// Keep inspecting.
+			case err == nil:
+				e.hookInspect = false
+			default:
+				e.CloseWithErr(err)
+				return 0, err
+			}
+		}
 		return e.write(dfMsg)
 	}
 
@@ -113,6 +142,11 @@ func (e *udpSessionEntry) Feed(msg *protocol.UDPMessage) (int, error) {
 	firstAddr := e.held[0].Addr
 	addr := firstAddr
 	done, err := e.IO.Hook(packets, &addr)
+	if errors.Is(err, ErrRequestHookMore) {
+		// b10d: send what is held and pass the hook every later datagram.
+		e.hookInspect = true
+		done, err = true, nil
+	}
 	if err != nil {
 		e.CloseWithErr(err)
 		return 0, err

@@ -157,10 +157,15 @@ type CongestionConfig struct {
 // UDP is called with all the packets held so far each time a new one arrives, and returns
 // false to wait for the next one. The hook must give up eventually, as held packets are only
 // sent (as-is, to the possibly modified reqAddr) once it returns true.
+//
+// b10d: TCP and UDP also receive the authenticated id (authID), so a hook can
+// attribute a verdict to the peer (the P2P penalty ladder in hsd). UDP may also
+// return ErrRequestHookMore to see the session's later datagrams without holding
+// them back.
 type RequestHook interface {
 	Check(isUDP bool, reqAddr string) bool
-	TCP(stream HyStream, reqAddr *string) ([]byte, error)
-	UDP(packets [][]byte, reqAddr *string) (done bool, err error)
+	TCP(authID string, stream HyStream, reqAddr *string) ([]byte, error)
+	UDP(authID string, packets [][]byte, reqAddr *string) (done bool, err error)
 }
 
 // Outbound provides the implementation of how the server should connect to remote servers.

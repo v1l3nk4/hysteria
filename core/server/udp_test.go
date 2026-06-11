@@ -259,3 +259,105 @@ func TestUDPSessionManagerHookHold(t *testing.T) {
 	time.Sleep(1 * time.Second)
 	goleak.VerifyNone(t)
 }
+
+// TestUDPSessionManagerHookMore (b10d): ErrRequestHookMore sends the held
+// packets at once and passes the hook each later datagram on its own, with a
+// copy of the address it cannot rewrite, until it returns nil and done; any
+// other error aborts the session.
+func TestUDPSessionManagerHookMore(t *testing.T) {
+	io := newMockUDPIO(t)
+	eventLogger := newMockUDPEventLogger(t)
+	sm := newUDPSessionManager(io, eventLogger, 2*time.Second)
+
+	msgCh := make(chan *protocol.UDPMessage, 8)
+	io.EXPECT().ReceiveMessage().RunAndReturn(func() (*protocol.UDPMessage, error) {
+		m := <-msgCh
+		if m == nil {
+			return nil, errors.New("closed")
+		}
+		return m, nil
+	})
+
+	go sm.Run()
+
+	addr := "1.2.3.4:443"
+	msg := func(id uint32, data string) *protocol.UDPMessage {
+		return &protocol.UDPMessage{SessionID: id, FragCount: 1, Addr: addr, Data: []byte(data)}
+	}
+	newConn := func() *mockUDPConn {
+		conn := newMockUDPConn(t)
+		ch := make(chan []byte)
+		conn.EXPECT().ReadFrom(mock.Anything).RunAndReturn(func(b []byte) (int, string, error) {
+			bs := <-ch
+			if bs == nil {
+				return 0, "", errors.New("closed")
+			}
+			return copy(b, bs), addr, nil
+		})
+		conn.EXPECT().Close().RunAndReturn(func() error {
+			close(ch)
+			return nil
+		}).Once()
+		return conn
+	}
+
+	// More on the held packet, More again (its address rewrite ignored), not
+	// done, then done: the fifth datagram is not inspected.
+	conn1 := newConn()
+	eventLogger.EXPECT().New(uint32(1), addr).Return().Once()
+	io.EXPECT().UDP(addr).Return(conn1, nil).Once()
+	io.EXPECT().Hook([][]byte{[]byte("p1")}, &addr).Return(false, ErrRequestHookMore).Once()
+	io.EXPECT().Hook([][]byte{[]byte("p2")}, &addr).RunAndReturn(func(_ [][]byte, a *string) (bool, error) {
+		*a = "5.6.7.8:443"
+		return true, ErrRequestHookMore
+	}).Once()
+	io.EXPECT().Hook([][]byte{[]byte("p3")}, &addr).Return(false, nil).Once()
+	io.EXPECT().Hook([][]byte{[]byte("p4")}, &addr).Return(true, nil).Once()
+	written := make(chan struct{})
+	mock.InOrder(
+		conn1.EXPECT().WriteTo([]byte("p1"), addr).Return(2, nil).Call,
+		conn1.EXPECT().WriteTo([]byte("p2"), addr).Return(2, nil).Call,
+		conn1.EXPECT().WriteTo([]byte("p3"), addr).Return(2, nil).Call,
+		conn1.EXPECT().WriteTo([]byte("p4"), addr).Return(2, nil).Call,
+		conn1.EXPECT().WriteTo([]byte("p5"), addr).RunAndReturn(func([]byte, string) (int, error) {
+			close(written)
+			return 2, nil
+		}).Call,
+	)
+	for _, d := range []string{"p1", "p2", "p3", "p4", "p5"} {
+		msgCh <- msg(1, d)
+	}
+	select {
+	case <-written:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the session's datagrams were not all sent")
+	}
+	eventLogger.EXPECT().Close(uint32(1), nil).Once()
+
+	// More on the held packet, then a drop: the session is aborted and the
+	// dropped datagram is not sent.
+	errDrop := errors.New("drop")
+	conn2 := newConn()
+	eventLogger.EXPECT().New(uint32(2), addr).Return().Once()
+	io.EXPECT().UDP(addr).Return(conn2, nil).Once()
+	io.EXPECT().Hook([][]byte{[]byte("q1")}, &addr).Return(true, ErrRequestHookMore).Once()
+	io.EXPECT().Hook([][]byte{[]byte("q2")}, &addr).Return(true, errDrop).Once()
+	conn2.EXPECT().WriteTo([]byte("q1"), addr).Return(2, nil).Once()
+	closed := make(chan struct{})
+	eventLogger.EXPECT().Close(uint32(2), errDrop).Run(func(uint32, error) { close(closed) }).Once()
+	msgCh <- msg(2, "q1")
+	msgCh <- msg(2, "q2")
+	select {
+	case <-closed:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the dropped session was not closed")
+	}
+
+	// Wait for the first session's timeout
+	assert.Eventually(t, func() bool { return sm.Count() == 0 }, 5*time.Second, 100*time.Millisecond)
+	mock.AssertExpectationsForObjects(t, io, eventLogger, conn1, conn2)
+
+	close(msgCh)
+	time.Sleep(1 * time.Second)
+	goleak.VerifyNone(t)
+}
