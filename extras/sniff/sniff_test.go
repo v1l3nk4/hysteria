@@ -167,7 +167,7 @@ func TestSnifferTCP(t *testing.T) {
 			go writeChunks(client, tt.data, tt.chunk)
 
 			reqAddr := tt.reqAddr
-			putback, err := (&Sniffer{Timeout: 3 * time.Second}).TCP(stream, &reqAddr)
+			putback, err := (&Sniffer{Timeout: 3 * time.Second}).TCP("", stream, &reqAddr)
 			require.NoError(t, err)
 			assert.Equal(t, tt.wantAddr, reqAddr)
 
@@ -187,7 +187,7 @@ func TestSnifferTCPTimeout(t *testing.T) {
 
 	reqAddr := "66.66.66.66:80"
 	start := time.Now()
-	putback, err := (&Sniffer{Timeout: 500 * time.Millisecond}).TCP(stream, &reqAddr)
+	putback, err := (&Sniffer{Timeout: 500 * time.Millisecond}).TCP("", stream, &reqAddr)
 	assert.NoError(t, err)
 	assert.Less(t, time.Since(start), 2*time.Second)
 	assert.Equal(t, []byte("GET / HTTP/1.1\r\nHost: example.com\r\n"), putback)
@@ -201,7 +201,7 @@ func TestSnifferTCPMaxBytes(t *testing.T) {
 	go client.Write(data)
 
 	reqAddr := "66.66.66.66:80"
-	putback, err := (&Sniffer{Timeout: 3 * time.Second}).TCP(stream, &reqAddr)
+	putback, err := (&Sniffer{Timeout: 3 * time.Second}).TCP("", stream, &reqAddr)
 	assert.NoError(t, err)
 	assert.Equal(t, data[:sniffMaxTCPBytes], putback)
 	assert.Equal(t, "66.66.66.66:80", reqAddr)
@@ -292,7 +292,7 @@ func assertSniffUDP(t *testing.T, packets [][]byte, want string, n int) {
 			held[j] = slices.Clone(packets[j])
 		}
 		reqAddr := "1.2.3.4:443"
-		done, err := sniffer.UDP(held, &reqAddr)
+		done, err := sniffer.UDP("", held, &reqAddr)
 		require.NoError(t, err)
 		if i < n {
 			require.False(t, done, "done after %d packets", i)

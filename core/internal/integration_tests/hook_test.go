@@ -23,7 +23,7 @@ func TestClientServerHookTCP(t *testing.T) {
 	auth.EXPECT().Authenticate(mock.Anything, mock.Anything, mock.Anything).Return(true, "nobody")
 	hook := mocks.NewMockRequestHook(t)
 	hook.EXPECT().Check(false, fakeEchoAddr).Return(true).Once()
-	hook.EXPECT().TCP(mock.Anything, mock.Anything).RunAndReturn(func(stream server.HyStream, s *string) ([]byte, error) {
+	hook.EXPECT().TCP(mock.Anything, mock.Anything, mock.Anything).RunAndReturn(func(authID string, stream server.HyStream, s *string) ([]byte, error) {
 		assert.Equal(t, fakeEchoAddr, *s)
 		// Change the address
 		*s = realEchoAddr
@@ -87,7 +87,7 @@ func TestClientServerHookUDP(t *testing.T) {
 	auth.EXPECT().Authenticate(mock.Anything, mock.Anything, mock.Anything).Return(true, "nobody")
 	hook := mocks.NewMockRequestHook(t)
 	hook.EXPECT().Check(true, fakeEchoAddr).Return(true).Twice()
-	hook.EXPECT().UDP(mock.Anything, mock.Anything).RunAndReturn(func(packets [][]byte, s *string) (bool, error) {
+	hook.EXPECT().UDP(mock.Anything, mock.Anything, mock.Anything).RunAndReturn(func(authID string, packets [][]byte, s *string) (bool, error) {
 		assert.Equal(t, fakeEchoAddr, *s)
 		if len(packets) == 1 {
 			// Hold the first packet back

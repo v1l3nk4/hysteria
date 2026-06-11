@@ -59,7 +59,7 @@ func (h *Sniffer) Check(isUDP bool, reqAddr string) bool {
 
 // TCP reads from the stream until it has an HTTP request header or a TLS ClientHello,
 // or can tell it's neither, and returns everything read.
-func (h *Sniffer) TCP(stream server.HyStream, reqAddr *string) ([]byte, error) {
+func (h *Sniffer) TCP(_ string, stream server.HyStream, reqAddr *string) ([]byte, error) {
 	timeout := h.Timeout
 	if timeout == 0 {
 		timeout = sniffDefaultTimeout
@@ -76,7 +76,7 @@ func (h *Sniffer) TCP(stream server.HyStream, reqAddr *string) ([]byte, error) {
 }
 
 // UDP looks for a QUIC ClientHello, which can span multiple packets.
-func (h *Sniffer) UDP(packets [][]byte, reqAddr *string) (bool, error) {
+func (h *Sniffer) UDP(_ string, packets [][]byte, reqAddr *string) (bool, error) {
 	var c quicCrypto
 	for i, p := range packets {
 		if !c.feed(p) && i == 0 {

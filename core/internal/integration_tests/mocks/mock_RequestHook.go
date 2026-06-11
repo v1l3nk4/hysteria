@@ -67,9 +67,9 @@ func (_c *MockRequestHook_Check_Call) RunAndReturn(run func(bool, string) bool) 
 	return _c
 }
 
-// TCP provides a mock function with given fields: stream, reqAddr
-func (_m *MockRequestHook) TCP(stream server.HyStream, reqAddr *string) ([]byte, error) {
-	ret := _m.Called(stream, reqAddr)
+// TCP provides a mock function with given fields: authID, stream, reqAddr
+func (_m *MockRequestHook) TCP(authID string, stream server.HyStream, reqAddr *string) ([]byte, error) {
+	ret := _m.Called(authID, stream, reqAddr)
 
 	if len(ret) == 0 {
 		panic("no return value specified for TCP")
@@ -77,19 +77,19 @@ func (_m *MockRequestHook) TCP(stream server.HyStream, reqAddr *string) ([]byte,
 
 	var r0 []byte
 	var r1 error
-	if rf, ok := ret.Get(0).(func(server.HyStream, *string) ([]byte, error)); ok {
-		return rf(stream, reqAddr)
+	if rf, ok := ret.Get(0).(func(string, server.HyStream, *string) ([]byte, error)); ok {
+		return rf(authID, stream, reqAddr)
 	}
-	if rf, ok := ret.Get(0).(func(server.HyStream, *string) []byte); ok {
-		r0 = rf(stream, reqAddr)
+	if rf, ok := ret.Get(0).(func(string, server.HyStream, *string) []byte); ok {
+		r0 = rf(authID, stream, reqAddr)
 	} else {
 		if ret.Get(0) != nil {
 			r0 = ret.Get(0).([]byte)
 		}
 	}
 
-	if rf, ok := ret.Get(1).(func(server.HyStream, *string) error); ok {
-		r1 = rf(stream, reqAddr)
+	if rf, ok := ret.Get(1).(func(string, server.HyStream, *string) error); ok {
+		r1 = rf(authID, stream, reqAddr)
 	} else {
 		r1 = ret.Error(1)
 	}
@@ -103,15 +103,16 @@ type MockRequestHook_TCP_Call struct {
 }
 
 // TCP is a helper method to define mock.On call
+//   - authID string
 //   - stream server.HyStream
 //   - reqAddr *string
-func (_e *MockRequestHook_Expecter) TCP(stream interface{}, reqAddr interface{}) *MockRequestHook_TCP_Call {
-	return &MockRequestHook_TCP_Call{Call: _e.mock.On("TCP", stream, reqAddr)}
+func (_e *MockRequestHook_Expecter) TCP(authID interface{}, stream interface{}, reqAddr interface{}) *MockRequestHook_TCP_Call {
+	return &MockRequestHook_TCP_Call{Call: _e.mock.On("TCP", authID, stream, reqAddr)}
 }
 
-func (_c *MockRequestHook_TCP_Call) Run(run func(stream server.HyStream, reqAddr *string)) *MockRequestHook_TCP_Call {
+func (_c *MockRequestHook_TCP_Call) Run(run func(authID string, stream server.HyStream, reqAddr *string)) *MockRequestHook_TCP_Call {
 	_c.Call.Run(func(args mock.Arguments) {
-		run(args[0].(server.HyStream), args[1].(*string))
+		run(args[0].(string), args[1].(server.HyStream), args[2].(*string))
 	})
 	return _c
 }
@@ -121,14 +122,14 @@ func (_c *MockRequestHook_TCP_Call) Return(_a0 []byte, _a1 error) *MockRequestHo
 	return _c
 }
 
-func (_c *MockRequestHook_TCP_Call) RunAndReturn(run func(server.HyStream, *string) ([]byte, error)) *MockRequestHook_TCP_Call {
+func (_c *MockRequestHook_TCP_Call) RunAndReturn(run func(string, server.HyStream, *string) ([]byte, error)) *MockRequestHook_TCP_Call {
 	_c.Call.Return(run)
 	return _c
 }
 
-// UDP provides a mock function with given fields: packets, reqAddr
-func (_m *MockRequestHook) UDP(packets [][]byte, reqAddr *string) (bool, error) {
-	ret := _m.Called(packets, reqAddr)
+// UDP provides a mock function with given fields: authID, packets, reqAddr
+func (_m *MockRequestHook) UDP(authID string, packets [][]byte, reqAddr *string) (bool, error) {
+	ret := _m.Called(authID, packets, reqAddr)
 
 	if len(ret) == 0 {
 		panic("no return value specified for UDP")
@@ -136,17 +137,17 @@ func (_m *MockRequestHook) UDP(packets [][]byte, reqAddr *string) (bool, error) 
 
 	var r0 bool
 	var r1 error
-	if rf, ok := ret.Get(0).(func([][]byte, *string) (bool, error)); ok {
-		return rf(packets, reqAddr)
+	if rf, ok := ret.Get(0).(func(string, [][]byte, *string) (bool, error)); ok {
+		return rf(authID, packets, reqAddr)
 	}
-	if rf, ok := ret.Get(0).(func([][]byte, *string) bool); ok {
-		r0 = rf(packets, reqAddr)
+	if rf, ok := ret.Get(0).(func(string, [][]byte, *string) bool); ok {
+		r0 = rf(authID, packets, reqAddr)
 	} else {
 		r0 = ret.Get(0).(bool)
 	}
 
-	if rf, ok := ret.Get(1).(func([][]byte, *string) error); ok {
-		r1 = rf(packets, reqAddr)
+	if rf, ok := ret.Get(1).(func(string, [][]byte, *string) error); ok {
+		r1 = rf(authID, packets, reqAddr)
 	} else {
 		r1 = ret.Error(1)
 	}
@@ -160,15 +161,16 @@ type MockRequestHook_UDP_Call struct {
 }
 
 // UDP is a helper method to define mock.On call
+//   - authID string
 //   - packets [][]byte
 //   - reqAddr *string
-func (_e *MockRequestHook_Expecter) UDP(packets interface{}, reqAddr interface{}) *MockRequestHook_UDP_Call {
-	return &MockRequestHook_UDP_Call{Call: _e.mock.On("UDP", packets, reqAddr)}
+func (_e *MockRequestHook_Expecter) UDP(authID interface{}, packets interface{}, reqAddr interface{}) *MockRequestHook_UDP_Call {
+	return &MockRequestHook_UDP_Call{Call: _e.mock.On("UDP", authID, packets, reqAddr)}
 }
 
-func (_c *MockRequestHook_UDP_Call) Run(run func(packets [][]byte, reqAddr *string)) *MockRequestHook_UDP_Call {
+func (_c *MockRequestHook_UDP_Call) Run(run func(authID string, packets [][]byte, reqAddr *string)) *MockRequestHook_UDP_Call {
 	_c.Call.Run(func(args mock.Arguments) {
-		run(args[0].([][]byte), args[1].(*string))
+		run(args[0].(string), args[1].([][]byte), args[2].(*string))
 	})
 	return _c
 }
@@ -178,7 +180,7 @@ func (_c *MockRequestHook_UDP_Call) Return(done bool, err error) *MockRequestHoo
 	return _c
 }
 
-func (_c *MockRequestHook_UDP_Call) RunAndReturn(run func([][]byte, *string) (bool, error)) *MockRequestHook_UDP_Call {
+func (_c *MockRequestHook_UDP_Call) RunAndReturn(run func(string, [][]byte, *string) (bool, error)) *MockRequestHook_UDP_Call {
 	_c.Call.Return(run)
 	return _c
 }
