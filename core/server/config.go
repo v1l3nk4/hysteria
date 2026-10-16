@@ -42,12 +42,54 @@ type Config struct {
 	TrafficLogger         TrafficLogger
 	MasqHandler           http.Handler
 	// StreamLimiter (b10d) is consulted before the server opens a NEW
-	// outbound proxy stream (TCP) or UDP session. Returning false rejects
-	// just that single stream/session, leaving the rest of the connection
-	// intact — used for per-peer new-connection rate limiting (the analog
-	// of the agent's wg_ext nft `ct state new` cap, which can't see hsd's
-	// locally-generated egress). nil disables the check.
+	// outbound proxy stream (TCP) or UDP session, and before a UDP session
+	// sends to an address it has no verdict for. Returning false rejects
+	// just that stream, session or datagram, leaving the rest of the
+	// connection intact. Together they see every new outbound flow, so a
+	// per-peer limiter is the analog of the agent's wg_ext nft `ct state
+	// new` cap, which can't see hsd's locally-generated egress. nil disables
+	// the check.
 	StreamLimiter StreamLimiter
+	// ConnTracker (b10d) is handed a way to close each connection the
+	// Authenticator accepts, so the side that issued the id can end the
+	// connection when it revokes the id. nil disables it.
+	ConnTracker ConnTracker
+
+	// b10d pre-auth limits: what a connection that has not authenticated may
+	// hold. Each zero value keeps upstream's behaviour.
+	//
+	// MaxHeaderBytes caps a request's HEADERS frame (http3.Server's field of
+	// the same name, also advertised as SETTINGS_MAX_FIELD_SECTION_SIZE).
+	// http3 allocates the length the client declares before reading it, up
+	// to the cap; a larger frame gets a 431. <=0 keeps http3's 1 MiB.
+	MaxHeaderBytes int
+	// PreAuthTimeout closes a connection that has not authenticated with
+	// HTTP/3 NO_ERROR once it has been idle this long, as a keepalive timeout
+	// would: it stands still while a request is in flight and runs again from
+	// the end of the last one, and a successful auth cancels it. Not
+	// http3.Server.IdleTimeout, which also ends authenticated connections
+	// whose streams hysteria took over. 0 disables it.
+	PreAuthTimeout time.Duration
+	// PreAuthMaxAge closes a connection still unauthenticated this long after
+	// its handshake, with HTTP/3 NO_ERROR, whatever its requests: they hold
+	// off PreAuthTimeout, never this. A successful auth cancels it. 0 disables
+	// it.
+	PreAuthMaxAge time.Duration
+	// PreAuthMaxStreams caps the request streams an unauthenticated connection
+	// has open at once; a stream past it is reset (H3_REQUEST_INCOMPLETE) and
+	// the connection stays. A stream counts once its first frame type arrived
+	// and until it ends; streams opened after the auth never count. 0 disables
+	// it.
+	PreAuthMaxStreams int
+	// PreAuthLimiter admits each new connection before its handshake and may
+	// end it while it has not authenticated; until its slot is released its
+	// connection receive window stays at InitialConnectionReceiveWindow. See
+	// PreAuthLimiter. nil admits all.
+	PreAuthLimiter PreAuthLimiter
+	// VerifySourceAddress is quic.Transport's: true makes the server answer
+	// that Initial with a Retry, so the client proves its address before the
+	// server keeps any state for it. nil never asks.
+	VerifySourceAddress func(net.Addr) bool
 }
 
 // fill fills the fields that are not set by the user with default values when possible,
@@ -85,6 +127,18 @@ func (c *Config) fill() error {
 		c.QUICConfig.MaxIncomingStreams = defaultMaxIncomingStreams
 	} else if c.QUICConfig.MaxIncomingStreams < 8 {
 		return errors.ConfigError{Field: "QUICConfig.MaxIncomingStreams", Reason: "must be at least 8"}
+	}
+	if c.QUICConfig.MaxIncomingUniStreams != 0 && c.QUICConfig.MaxIncomingUniStreams < 3 {
+		return errors.ConfigError{Field: "QUICConfig.MaxIncomingUniStreams", Reason: "must be at least 3"}
+	}
+	if c.PreAuthTimeout < 0 {
+		return errors.ConfigError{Field: "PreAuthTimeout", Reason: "must not be negative"}
+	}
+	if c.PreAuthMaxAge < 0 {
+		return errors.ConfigError{Field: "PreAuthMaxAge", Reason: "must not be negative"}
+	}
+	if c.PreAuthMaxStreams < 0 {
+		return errors.ConfigError{Field: "PreAuthMaxStreams", Reason: "must not be negative"}
 	}
 	c.QUICConfig.DisablePathMTUDiscovery = c.QUICConfig.DisablePathMTUDiscovery || pmtud.DisablePathMTUDiscovery
 	var err error
@@ -141,6 +195,18 @@ type QUICConfig struct {
 	DisablePathMTUDiscovery        bool // The server may still override this to true on unsupported platforms.
 	DisableGSO                     bool
 	DisableStatelessReset          bool
+	// MaxIncomingUniStreams (b10d) caps the client's unidirectional streams
+	// open at once. HTTP/3 uses three (control, QPACK encoder and decoder);
+	// 0 keeps quic-go's 100, anything else must be at least 3.
+	MaxIncomingUniStreams int64
+	// DisableVersionNegotiation (b10d) stops the server from answering a long
+	// header of a version it does not speak with a Version Negotiation
+	// packet (quic.Transport.DisableVersionNegotiationPackets).
+	// DisableStatelessReset alone leaves that answer: behind an obfuscator
+	// with no MAC (Salamander) a random datagram decodes to such a header now
+	// and then, so a listener that must stay silent to blind probes sets
+	// both. Hysteria clients speak QUIC v1 only and never need VN.
+	DisableVersionNegotiation bool
 }
 
 type CongestionConfig struct {
@@ -284,6 +350,61 @@ type TrafficLogger interface {
 type StreamLimiter interface {
 	AllowTCP(id, reqAddr string) bool
 	AllowUDP(id, reqAddr string) bool
+	// AllowUDPDest is asked before a UDP session sends to an address it has
+	// no verdict for: one of its new destinations (its first address
+	// excepted, which AllowUDP covered). false drops that datagram and is
+	// not remembered, so the session's next datagram there asks again.
+	AllowUDPDest(id, reqAddr string) bool
+}
+
+// ConnTracker (b10d) lets the application end at once a connection whose id
+// it revokes: a TrafficLogger returning false ends a connection only at its
+// next byte, which an idle stream or UDP session never moves. TrackConn is
+// called once per connection whose auth succeeded, with the id Authenticate
+// returned, before the connection counts as authenticated and before the auth
+// response is written, so nothing of the connection is served before it
+// returns. It must not block.
+//
+// closeConn closes the whole connection, every stream and UDP session of it,
+// with the code a TrafficLogger refusal sends. It returns at once and may be
+// called from any goroutine, more than once, and after the connection ended.
+// The end is reported as any other: TrafficLogger.LogOnlineState(id, false)
+// and EventLogger.Disconnect.
+type ConnTracker interface {
+	TrackConn(id string, closeConn func())
+}
+
+// PreAuthLimiter (b10d) bounds the connections that have not authenticated.
+// Acquire is called once per new connection, with the source address of its
+// first Initial, before the server keeps any state for it: ok=false refuses
+// the connection (CONNECTION_REFUSED). quic-go asks VerifySourceAddress about
+// an Initial without a token first, so a source it answers with a Retry
+// reaches Acquire only once it proved its address; any other is unproven.
+// Must be safe for concurrent use and must not block: quic-go calls it on the
+// goroutine that reads every packet.
+//
+// While a connection holds an unreleased slot, the server never grows its
+// connection receive window past QUICConfig.InitialConnectionReceiveWindow,
+// so whatever it leaves unread (request bodies, the QPACK streams) stays
+// within that window however much it sends that the server reads; from the
+// release on, the window grows as quic-go tunes it.
+type PreAuthLimiter interface {
+	Acquire(remote net.Addr) (slot PreAuthSlot, ok bool)
+}
+
+// PreAuthSlot (b10d) is one admitted connection's place in a PreAuthLimiter.
+// The server calls Release exactly once: at the connection's successful auth,
+// or when it ends unauthenticated, a handshake that never completes included.
+// Once the handshake completed, before any request of the connection is
+// served, it calls SetCloser, at most once, with a way to end the connection:
+// closeConn closes it with HTTP/3 NO_ERROR, as an idle close would, unless it
+// authenticated by then. closeConn returns at once and may be called from any
+// goroutine, more than once, and after the connection ended. A connection
+// whose handshake never completes gets no SetCloser, and one that ends as it
+// completes may get it after Release. Neither method may block.
+type PreAuthSlot interface {
+	SetCloser(closeConn func())
+	Release()
 }
 
 type StreamState int
